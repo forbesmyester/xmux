@@ -125,6 +125,7 @@ function configure() {
     wait_for "$SOCKET_NAME" "$SESSION_NAME"
     test -f "$HOME/.xmux.post" && tmux -L "$SOCKET_NAME" source-file "$HOME/.xmux.post"
     tmux -L "$SOCKET_NAME" set-option -g set-titles-string 'tmux:#(xmux current_socket):#S:#I - #T'
+    tmux -L "$SOCKET_NAME" set-option -g set-titles on
 }
 
 
