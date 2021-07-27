@@ -3,7 +3,6 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-
 function list-kak-on-desktop() {
     wmctrl -l  | grep '^0x[a-z0-9]\+\s\+\(11\|\-1\)'  | grep '@\[\(.*\)\].*Kakoune' | sed 's/.*@\[\(.*\)\].*/\1/'
 }
@@ -13,24 +12,18 @@ function get_current_desktop() {
     wmctrl -d | grep '^[0-9]\+\s\+\*' | awk '{ print $1 }'
 }
 
+
 function list_visible_session() {
-    local SOCKS=''
     local DESKTOP=''
     local WINS=''
-    SOCKS="$(list_socket)"
     DESKTOP="$(get_current_desktop)"
     WINS="$(wmctrl -l)"
-    for S in $SOCKS; do
-        echo "$WINS" | \
-            awk '{ print $2, $1, $4 }' | \
-            sed 's/^\(\-\?[0-9]\+\) \([^ ]\+\) \(tmux\:[^\:]\+\:[^\:]\+\).*/\1 \2 \3/'|\
-            grep -F "tmux:${S}:" |\
-            sed 's/^\(\-\?[0-9]\+\) \([^ ]\+\) tmux\:\([^\:]\+\:[^\:]\+\).*/\1 \2 \3/'|\
-            awk -v DESK="$DESKTOP" '{ if ($1 == -1 || $1 == DESK) print 1, $2, $3; else print 0, $2, $3; }' \
-            || true
-    done
+    wmctrl -l | sed 's/^\([^ ]\+\) \+\([^ ]\+\) \+\([^ ]\+\) \+/\1\t\2\t\3\t/' | awk -v DESK="$DESKTOP" 'BEGIN { FS="\t" }
+    $4 !~ /^tmux:[0-9]+:/ { next }
+    $2 != DESK && $2 != -1 { print 0, $1, gensub(/^tmux:([^:]+):([^:]+).*/, "\\1:\\2", "g", $4); next}
+    { print 1, $1, gensub(/^tmux:([^:]+):([^:]+).*/, "\\1:\\2", "g", $4) }
+    '
 }
-
 
 
 function move_to_current_desktop() {
@@ -119,19 +112,32 @@ function wait_for() {
 }
 
 
+function title() {
+    local SOCKET_NAME="$1"
+    tmux -L "$SOCKET_NAME" set-option -g set-titles-string 'tmux:#(xmux current_socket):#S:#I - #T'
+    tmux -L "$SOCKET_NAME" set-option -g set-titles on
+}
+
+
 function configure() {
     local SOCKET_NAME="$1"
     local SESSION_NAME="$2"
     wait_for "$SOCKET_NAME" "$SESSION_NAME"
     test -f "$HOME/.xmux.post" && tmux -L "$SOCKET_NAME" source-file "$HOME/.xmux.post"
-    tmux -L "$SOCKET_NAME" set-option -g set-titles-string 'tmux:#(xmux current_socket):#S:#I - #T'
-    tmux -L "$SOCKET_NAME" set-option -g set-titles on
+    title "$SOCKET_NAME"
 }
 
 
 function session_name_from_directory() {
     basename "$PWD" | sed 'sJ[^[:alnum:]]J_Jg'
 }
+
+
+function delay_title() {
+    sleep 2
+    title "$1"
+}
+
 
 function new() {
     local SOCKET_NAME=''
@@ -147,6 +153,7 @@ function new() {
 
     test "$#" -gt 1 && SESSION_NAME="$2" || SESSION_NAME="$(session_name_from_directory)"
     configure "$SOCKET_NAME" "$SESSION_NAME" &
+    delay_title "$SOCKET_NAME" &
     new_launch "$SOCKET_NAME" "$SESSION_NAME"
 }
 
@@ -174,12 +181,14 @@ function send() {
     tmux -L "$SOCKET_NAME" paste-buffer -b xmux_paste -t "$SESSION_NAME"
 }
 
+
 function ensure() {
     if move_to_current_desktop "$2" "$3"; then
         exit 0
     fi
 
 }
+
 
 if [ "$#" -lt 1 ]; then
     exit 0
@@ -256,4 +265,3 @@ if [ "$1" == 'list_visible_socket' ]; then
     list_visible_socket
     exit
 fi
-
