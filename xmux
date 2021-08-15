@@ -3,7 +3,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-function list-kak-on-desktop() {
+function list_kak_on_desktop() {
     wmctrl -l  | grep '^0x[a-z0-9]\+\s\+\(11\|\-1\)'  | grep '@\[\(.*\)\].*Kakoune' | sed 's/.*@\[\(.*\)\].*/\1/'
 }
 
@@ -49,8 +49,18 @@ function list_socket() {
 }
 
 
-function list_session() {
+function list_session_in_socket() {
     tmux -L "$1" list-session
+}
+
+
+function list_session() {
+    export -f list_session_in_socket
+    function tl {
+        list_session_in_socket "$1" | sed 's/\:.*//' | sed "s/^/-1 0x0000000 ${1}:/"
+    }
+    export -f tl
+    list_socket | parallel tl {}
 }
 
 
@@ -145,7 +155,7 @@ function new() {
     if [ "$#" -gt 0 ]; then
         SOCKET_NAME="$1"
     else
-        SOCKET_NAME="$(list_visible_session | awk '$1==1 { print $3 }' | sed 's/\:[^\:]\+//')"
+        SOCKET_NAME="$(list_session | awk '$1==1 { print $3 }' | sed 's/\:[^\:]\+//')"
         if [ "${#SOCKET_NAME}" -eq 0 ]; then
             SOCKET_NAME="$(session_name_from_directory)"
         fi
@@ -183,10 +193,18 @@ function send() {
 
 
 function ensure() {
-    if move_to_current_desktop "$2" "$3"; then
+    if list_session | grep -F "$1:$2"; then
         exit 0
     fi
+    exit 1
+}
 
+
+function ensure_desktop() {
+    if move_to_current_desktop "$1" "$2"; then
+        exit 0
+    fi
+    exit 1
 }
 
 
@@ -196,6 +214,11 @@ fi
 
 if [ "$1" == 'ensure' ]; then
     ensure "$2" "$3"
+    exit
+fi
+
+if [ "$1" == 'ensure_desktop' ]; then
+    ensure_desktop "$2" "$3"
     exit
 fi
 
@@ -215,7 +238,11 @@ if [ "$1" == 'current_socket' ]; then
 fi
 
 if [ "$1" == 'list_session' ]; then
-    list_session "$2"
+    if [ "$#" -gt 1 ]; then
+        list_session_in_socket "$2"
+        exit
+    fi
+    list_session
     exit
 fi
 
@@ -264,4 +291,13 @@ fi
 if [ "$1" == 'list_visible_socket' ]; then
     list_visible_socket
     exit
+fi
+
+WAIT_JOBS=$(jobs -p)
+if [ "${#WAIT_JOBS}" -gt 0 ]; then
+    while [ "$WAIT_JOBS" -gt 0 ]; do
+        sleep 1
+        echo "> GOING"
+        WAIT_JOBS=$(jobs -p)
+    done
 fi
