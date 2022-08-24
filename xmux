@@ -3,54 +3,38 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-function list_kak_on_desktop() {
-    wmctrl -l  | grep '^0x[a-z0-9]\+\s\+\(11\|\-1\)'  | grep '@\[\(.*\)\].*Kakoune' | sed 's/.*@\[\(.*\)\].*/\1/'
-}
 
-
-function get_current_desktop() {
-    wmctrl -d | grep '^[0-9]\+\s\+\*' | awk '{ print $1 }'
-}
-
-
-function list_visible_session() {
-    local DESKTOP=''
-    local WINS=''
-    DESKTOP="$(get_current_desktop)"
-    WINS="$(wmctrl -l)"
-    wmctrl -l | sed 's/^\([^ ]\+\) \+\([^ ]\+\) \+\([^ ]\+\) \+/\1\t\2\t\3\t/' | awk -v DESK="$DESKTOP" 'BEGIN { FS="\t" }
-    $4 !~ /^tmux:[0-9]+:/ { next }
-    $2 != DESK && $2 != -1 { print 0, $1, gensub(/^tmux:([^:]+):([^:]+).*/, "\\1:\\2", "g", $4); next}
-    { print 1, $1, gensub(/^tmux:([^:]+):([^:]+).*/, "\\1:\\2", "g", $4) }
-    '
-}
-
-
-function move_to_current_desktop() {
-    local SOCKET_NAME="$1"
-    local SESSION_NAME="$2"
-    local DESKTOP="9999"
-    DESKTOP="$(get_current_desktop)"
-    list_visible_session | grep -F "${SOCKET_NAME}:${SESSION_NAME}" | awk '{ print $2 }' | parallel wmctrl -i -r {} -t "$DESKTOP"
+function ttmux() {
+    local CS="$(xmux current_socket)"
+    if [ "$CS" == "$1" ]; then
+        shift 1
+        tmux $@
+        return
+    fi
+    tmux -L $@
 }
 
 
 function current_socket() {
+    if [ ! -z "${TMUX-}" ]; then
     local A=''
     local A="${TMUX%%,*}"
     echo "${A##*/}"
+    fi
 }
 
 
 function list_socket() {
+    local CS="$(current_socket)"
     set +e
-    find /tmp/tmux-$UID -type s | parallel tmux -S {} list-session '>/dev/null' '2>/dev/null' '&&' echo "{}" | sed 's/.*\///'
+    echo "$CS"
+    find /tmp/tmux-$UID -type s | parallel tmux -S {} list-session '>/dev/null' '2>/dev/null' '&&' echo "{}" | sed 's/.*\///' | grep -v "$CS"
     set -e
 }
 
 
 function list_session_in_socket() {
-    tmux -L "$1" list-session
+    ttmux "$1" list-session
 }
 
 
@@ -60,7 +44,33 @@ function list_session() {
         list_session_in_socket "$1" | sed 's/\:.*//' | sed "s/^/-1 0x0000000 ${1}:/"
     }
     export -f tl
+    export -f ttmux
     list_socket | parallel tl {}
+}
+
+
+function current_session() {
+    ttmux "$1" list-window  -F '#{session_name}' | head -n1
+}
+
+
+function list_window() {
+    ttmux "$1" list-window -t "$2" -F '#{window_id} #{window_name}'
+}
+
+
+function list_pane() {
+    ttmux "$1" list-pane -t "${2}:$3" -F '#D'
+}
+
+
+function current_window() {
+    ttmux "$1" list-window -t "$2" -F '#{window_active} #{window_id} #{window_name}' | awk '$1 == 1 { print $0 }' | sed 's/. \+//'
+}
+
+
+function current_pane() {
+    ttmux "$1" list-pane -t "${2}:$3" -F '#{pane_active} #D' | awk '$1 == 1 { print $0 }' | sed 's/. \+//'
 }
 
 
@@ -73,9 +83,8 @@ function new_launch() {
         CONFIG_FILE_OPT='-f'
         CONFIG_FILE="$HOME/.xmux.conf"
     fi
-    TMUX_SESSION_COUNT=0
-    LOOP_COUNT=0
-    tmux -L "$SOCKET_NAME" "$CONFIG_FILE_OPT" "$CONFIG_FILE" new-session -s "$SESSION_NAME"
+    echo ttmux "$SOCKET_NAME" "$CONFIG_FILE_OPT" "$CONFIG_FILE" new-session -s "$SESSION_NAME"
+    ttmux "$SOCKET_NAME" "$CONFIG_FILE_OPT" "$CONFIG_FILE" new-session -s "$SESSION_NAME"
 }
 
 
@@ -84,13 +93,13 @@ function exists() {
     local SESSION_NAME="$2"
     local LOOP_COUNT="0"
     local TMUX_SESSION_COUNT="0"
-    if ! tmux -L "$SOCKET_NAME" list-sessions >/dev/null 2>/dev/null; then
+    if ! ttmux "$SOCKET_NAME" list-sessions >/dev/null 2>/dev/null; then
         return 1
     fi
-    if tmux -L "$SOCKET_NAME" list-sessions 2>&1 | grep -v "^$SESSION_NAME" > /dev/null; then
-        return 1
+    if ttmux "$SOCKET_NAME" list-sessions 2>&1 | grep "^$SESSION_NAME" > /dev/null; then
+        return 0
     fi
-    return 0
+    return 1
 }
 
 
@@ -108,8 +117,15 @@ function wait_for() {
     local SESSION_NAME="$2"
     local LOOP_COUNT="0"
     local TMUX_SESSION_COUNT="0"
+    local CURRENT_SOCKET="$(current_socket)"
+    local CURRENT_SESSION="$(current_session "$CURRENT_SOCKET")"
+
+    if [ "$CURRENT_SOCKET" == "$SOCKET_NAME" ] && [ "$CURRENT_SESSION" == "$SESSION_NAME" ]; then
+        return
+    fi
+
     while [ "$LOOP_COUNT" -lt 50 ] && [ "$TMUX_SESSION_COUNT" -lt 1 ]; do
-        if tmux -L "$SOCKET_NAME" list-sessions 2>&1 | grep "^$SESSION_NAME" > /dev/null; then
+        if ttmux "$SOCKET_NAME" list-sessions 2>&1 | grep "^$SESSION_NAME" > /dev/null; then
             TMUX_SESSION_COUNT=1
         fi
         LOOP_COUNT=$((LOOP_COUNT + 1))
@@ -124,8 +140,8 @@ function wait_for() {
 
 function title() {
     local SOCKET_NAME="$1"
-    tmux -L "$SOCKET_NAME" set-option -g set-titles-string 'tmux:#(xmux current_socket):#S:#I - #T'
-    tmux -L "$SOCKET_NAME" set-option -g set-titles on
+    ttmux "$SOCKET_NAME" set-option -g set-titles-string 'xmux #(xmux current_socket)/#S:#{window_id}.#D - #T'
+    ttmux "$SOCKET_NAME" set-option -g set-titles on
 }
 
 
@@ -133,13 +149,19 @@ function configure() {
     local SOCKET_NAME="$1"
     local SESSION_NAME="$2"
     wait_for "$SOCKET_NAME" "$SESSION_NAME"
-    test -f "$HOME/.xmux.post" && tmux -L "$SOCKET_NAME" source-file "$HOME/.xmux.post"
+    test -f "$HOME/.xmux.post" && ttmux "$SOCKET_NAME" source-file "$HOME/.xmux.post"
     title "$SOCKET_NAME"
 }
 
 
 function session_name_from_directory() {
-    basename "$PWD" | sed 'sJ[^[:alnum:]]J_Jg'
+    local PROSP
+    # PROSP="$( [ -z "$KAKOUNE_SESSION" ] && echo "$KAKOUNE_SESSION" || git rev-parse --show-toplevel 2> /dev/null || echo "$PWD" )"
+    PROSP="$( git rev-parse --show-toplevel 2> /dev/null || echo "$PWD" )"
+    if [ ! -z "${KAKOUNE_SESSION-}" ]; then
+        PROSP="$KAKOUNE_SESSION"
+    fi
+    echo $PROSP | tr '[:upper:]' '[:lower:]' | sed 's/[^A-Za-z0-9]/_/g' | sed 's/^_\+//' | sed 's/__\+/_/' | sed 's/_\+$//'
 }
 
 
@@ -150,8 +172,12 @@ function delay_title() {
 
 
 function new() {
+
     local SOCKET_NAME=''
     local SESSION_NAME=''
+    local CURRENT_SESSION=''
+    local CURRENT_SOCKET=''
+
     if [ "$#" -gt 0 ]; then
         SOCKET_NAME="$1"
     else
@@ -162,17 +188,40 @@ function new() {
     fi
 
     test "$#" -gt 1 && SESSION_NAME="$2" || SESSION_NAME="$(session_name_from_directory)"
+    CURRENT_SOCKET="$(current_socket)"
+    if [ "$CURRENT_SOCKET" != "" ]; then
+        CURRENT_SESSION="$(current_session "$CURRENT_SOCKET")"
+    fi
+
+    if [ "$CURRENT_SOCKET" == "$SOCKET_NAME" ] && [ "$CURRENT_SESSION" == "$SESSION_NAME" ]; then
+        tmux split-window -v -c '#{pane_current_path}'
+        CURRENT_WINDOW="$(current_window "$CURRENT_SOCKET" "$CURRENT_SESSION" | sed 's/ .*//')"
+        CURRENT_PANE="$(current_pane "$CURRENT_SOCKET" "$CURRENT_SESSION" "$CURRENT_WINDOW")"
+        echo "$CURRENT_WINDOW $CURRENT_PANE"
+        exit
+    fi
+
     configure "$SOCKET_NAME" "$SESSION_NAME" &
     delay_title "$SOCKET_NAME" &
     new_launch "$SOCKET_NAME" "$SESSION_NAME"
 }
 
 
-function ctrl_c() {
+function key() {
     local SOCKET_NAME="$1"
     local SESSION_NAME="$2"
+    local PANE="1"
+    local KEY="$3"
     wait_for "$SOCKET_NAME" "$SESSION_NAME"
-    tmux -L "$SOCKET_NAME" send-keys -t "$SESSION_NAME" 'C-c'
+    if [ "$#" -eq 4 ]; then
+        SESSION_NAME="$SESSION_NAME:$3"
+        KEY="$4"
+    fi
+    if [ "$#" -eq 5 ]; then
+        SESSION_NAME="${SESSION_NAME}:${3}.${4}"
+        KEY="$5"
+    fi
+    ttmux "$SOCKET_NAME" send-keys -t "$SESSION_NAME" "$KEY"
 }
 
 
@@ -181,14 +230,21 @@ function send() {
     local SESSION_NAME="$2"
     local AS_LINES="$3"
     wait_for "$SOCKET_NAME" "$SESSION_NAME"
-    local CHARS=''
-    printf "%s" "$CHARS" | tmux -L "$SOCKET_NAME" loadb -b xmux_paste -
-    if [ "$AS_LINES" -gt 0 ]; then
-        cat /dev/stdin | awk '{ print $0 }' | tmux -L "$SOCKET_NAME" loadb -b xmux_paste -
-    else
-        cat /dev/stdin | tmux -L "$SOCKET_NAME" loadb -b xmux_paste -
+    if [ "$#" -eq 4 ]; then
+        SESSION_NAME="$SESSION_NAME:$3"
+        AS_LINES="$4"
     fi
-    tmux -L "$SOCKET_NAME" paste-buffer -b xmux_paste -t "$SESSION_NAME"
+    if [ "$#" -eq 5 ]; then
+        SESSION_NAME="${SESSION_NAME}:${3}.${4}"
+        AS_LINES="$5"
+    fi
+    if [ "$AS_LINES" -gt 0 ]; then
+        # AWK always seems to put a new line at the end...
+        cat /dev/stdin | awk '{ print $0 }' | ttmux "$SOCKET_NAME" loadb -b xmux_paste -
+    else
+        cat /dev/stdin | ttmux "$SOCKET_NAME" loadb -b xmux_paste -
+    fi
+    ttmux "$SOCKET_NAME" paste-buffer -b xmux_paste -t "$SESSION_NAME"
 }
 
 
@@ -200,16 +256,33 @@ function ensure() {
 }
 
 
-function ensure_desktop() {
-    if move_to_current_desktop "$1" "$2"; then
-        exit 0
-    fi
-    exit 1
-}
-
-
 if [ "$#" -lt 1 ]; then
     exit 0
+fi
+
+if [ "$1" == '--help' ]; then
+    echo "USAGE:"
+    echo ""
+    echo "$0 list-socket - Lists SESSION"
+    echo "$0 list-session [SESSION] - List SESSIONS and CONSOLE, optionally filltered by SESSION"
+    echo "$0 list-window SOCKET SESSION (listed as WINDOW_ID / WINDOW_NAME"
+    echo "$0 list-pane SOCKET SESSION WINDOW_ID/WINDOW_NAME"
+    echo ""
+    echo "$0 current-socket Show the current SOCKET (if there is one)"
+    echo "$0 current-session SOCKET Show the current SESSION (if there is one)"
+    echo "$0 current-window SOCKET SESSION (listed as WINDOW_ID / WINDOW_NAME)"
+    echo "$0 current-pane SOCKET SESSION WINDOW_ID/WINDOW_NAME"
+    echo ""
+    echo "$0 ensure SOCKET SESSION check if a SOCKET/SESSION combination exists "
+    echo "$0 wait-for SOCKET SESSION wait for SOCKET/SESSION combination to be running "
+    echo "$0 new [SOCKET] [SESSION] Start a new SESSION where SOCKET and SESSION can be specified or guessed"
+    echo ""
+    echo "$0 chars SOCKET SESSION [WINDOW] [PANE] Send characters from STDIN to SOCKET/SESSION/WINDOW/PANE"
+    echo "$0 lines SOCKET SESSION [WINDOW] [PANE] Send characters from STDIN to SOCKET/SESSION/WINDOW/PANE with an Enter key press if it does not already end in one"
+    echo "$0 nl SOCKET SESSION [WINDOW] [PANE] Send an Enter key press to SOCKET/SESSION/WINDOW/PANE"
+    echo "$0 ctrl_c SOCKET SESSION [WINDOW] [PANE] Send an Ctrl-C key press to SOCKET/SESSION/WINDOW/PANE"
+    echo "$0 key SOCKET SESSION [WINDOW] [PANE] <key> Send an Ctrl-C key press to SOCKET/SESSION/WINDOW/PANE"
+    exit
 fi
 
 if [ "$1" == 'ensure' ]; then
@@ -217,32 +290,59 @@ if [ "$1" == 'ensure' ]; then
     exit
 fi
 
-if [ "$1" == 'ensure_desktop' ]; then
-    ensure_desktop "$2" "$3"
-    exit
-fi
+# if [ "$1" == 'ensure_desktop' ]; then
+#     ensure_desktop "$2" "$3"
+#     exit
+# fi
 
-if [ "$1" == 'list_socket' ]; then
+if [ "$1" == 'list_socket' ] || [ "$1" == 'list-socket' ]; then
     list_socket
     exit
 fi
 
-if [ "$1" == 'list_visible_session' ]; then
-    list_visible_session
+if [ "$1" == 'wait_for' ] || [ "$1" == 'wait-for' ]; then
+    wait_for "$2" "$3"
     exit
 fi
 
-if [ "$1" == 'current_socket' ]; then
+if [ "$1" == 'current_socket' ] || [ "$1" == 'current-socket' ]; then
     current_socket
     exit
 fi
 
-if [ "$1" == 'list_session' ]; then
+
+if [ "$1" == 'current_session' ] || [ "$1" == 'current-session' ]; then
+    current_session "$2"
+    exit
+fi
+
+
+if [ "$1" == 'list_session' ] || [ "$1" == 'list-session' ]; then
     if [ "$#" -gt 1 ]; then
         list_session_in_socket "$2"
         exit
     fi
     list_session
+    exit
+fi
+
+if [ "$1" == 'list_window' ] || [ "$1" == 'list-window' ]; then
+    list_window "$2" "$3"
+    exit
+fi
+
+if [ "$1" == 'list_pane' ] || [ "$1" == 'list-pane' ]; then
+    list_pane "$2" "$3" "$4"
+    exit
+fi
+
+if [ "$1" == 'current_window' ] || [ "$1" == 'current-window' ]; then
+    current_window "$2" "$3"
+    exit
+fi
+
+if [ "$1" == 'current_pane' ] || [ "$1" == 'current-pane' ]; then
+    current_pane "$2" "$3" "$4"
     exit
 fi
 
@@ -258,22 +358,32 @@ if [ "$1" == 'configure' ]; then
 fi
 
 if [ "$1" == 'chars' ]; then
-    send "$2" "$3" 0
+    shift 1
+    send $@ 0
     exit
 fi
 
 if [ "$1" == 'lines' ]; then
-    send "$2" "$3" 1
+    shift 1
+    send $@ 1
     exit
 fi
 
 if [ "$1" == 'nl' ]; then
-    echo '' | send "$2" "$3" 1
+    shift 1
+    echo '' | send $@ 1
     exit
 fi
 
 if [ "$1" == 'ctrl_c' ]; then
-    ctrl_c "$2" "$3"
+    shift 1
+    key $@ "C-c"
+    exit
+fi
+
+if [ "$1" == 'key' ]; then
+    shift 1
+    key $@
     exit
 fi
 
@@ -282,8 +392,13 @@ if [ "$1" == 'exists' ]; then
     exit
 fi
 
-if [ "$1" == 'move_to_current_desktop' ]; then
-    move_to_current_desktop "$2" "$3"
+if [ "$1" == 'splith' ]; then
+    tmux split-window -h -c '#{pane_current_path}'
+    exit
+fi
+
+if [ "$1" == 'splitv' ]; then
+    tmux split-window -v -c '#{pane_current_path}'
     exit
 fi
 
