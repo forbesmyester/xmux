@@ -139,9 +139,12 @@ function wait_for() {
 
 
 function title() {
-    local SOCKET_NAME="$1"
-    ttmux "$SOCKET_NAME" set-option -g set-titles-string 'xmux #(xmux current_socket)/#S:#{window_id}.#D - #T'
-    ttmux "$SOCKET_NAME" set-option -g set-titles on
+    XMUX_SET_TITLE=${XMUX_SET_TITLE:-1}
+    if [ "$XMUX_SET_TITLE" -eq 1 ]; then
+        local SOCKET_NAME="$1"
+        ttmux "$SOCKET_NAME" set-option -g set-titles-string 'xmux #(xmux current_socket)/#S:#{window_id}.#D - #T'
+        ttmux "$SOCKET_NAME" set-option -g set-titles on
+    fi
 }
 
 
@@ -157,7 +160,7 @@ function configure() {
 function session_name_from_directory() {
     local PROSP
     # PROSP="$( [ -z "$KAKOUNE_SESSION" ] && echo "$KAKOUNE_SESSION" || git rev-parse --show-toplevel 2> /dev/null || echo "$PWD" )"
-    PROSP="$( git rev-parse --show-toplevel 2> /dev/null || echo "$PWD" )"
+    PROSP="$( git rev-parse --show-toplevel 2> /dev/null | sed 's/.*\///' || echo "$PWD" )"
     if [ ! -z "${KAKOUNE_SESSION-}" ]; then
         PROSP="$KAKOUNE_SESSION"
     fi
@@ -349,6 +352,10 @@ fi
 if [ "$1" == 'new' ]; then
     shift 1
     new $@
+    XMUX_SET_TITLE=${XMUX_SET_TITLE:-1}
+    if [ "$XMUX_SET_TITLE" -eq 1 ]; then
+        echo -ne "\033]0;$TERM\007";
+    fi
     exit
 fi
 
