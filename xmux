@@ -3,7 +3,6 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-
 function ttmux() {
     local CS="$(xmux current_socket)"
     if [ "$CS" == "$1" ]; then
@@ -157,7 +156,7 @@ function configure() {
 }
 
 
-function session_name_from_directory() {
+function socket_name_from_directory() {
     local PROSP
     # PROSP="$( [ -z "$KAKOUNE_SESSION" ] && echo "$KAKOUNE_SESSION" || git rev-parse --show-toplevel 2> /dev/null || echo "$PWD" )"
     PROSP="$( git rev-parse --show-toplevel 2> /dev/null | sed 's/.*\///' || echo "$PWD" )"
@@ -186,11 +185,12 @@ function new() {
     else
         SOCKET_NAME="$(list_session | awk '$1==1 { print $3 }' | sed 's/\:[^\:]\+//')"
         if [ "${#SOCKET_NAME}" -eq 0 ]; then
-            SOCKET_NAME="$(session_name_from_directory)"
+            SOCKET_NAME="$(socket_name_from_directory)"
         fi
     fi
 
-    test "$#" -gt 1 && SESSION_NAME="$2" || SESSION_NAME="$(session_name_from_directory)"
+    # test "$#" -gt 1 && SESSION_NAME="$2" || SESSION_NAME="$(socket_name_from_directory)"
+    test "$#" -gt 1 && SESSION_NAME="$2" || SESSION_NAME="default"
     CURRENT_SOCKET="$(current_socket)"
     if [ "$CURRENT_SOCKET" != "" ]; then
         CURRENT_SESSION="$(current_session "$CURRENT_SOCKET")"
